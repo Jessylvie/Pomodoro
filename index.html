@@ -245,9 +245,6 @@ input[type=range]::-webkit-slider-thumb:hover{background:var(--text);}
 .pip-btn{background:none;border:1px solid var(--border2);color:var(--text-3);font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:7px 14px;border-radius:8px;width:100%;transition:all .2s;display:flex;align-items:center;justify-content:center;gap:7px;}
 .pip-btn:hover{color:var(--text);border-color:var(--text-3);}
 .pip-btn.active{color:var(--tomato);border-color:var(--tomato);background:rgba(255,85,51,.07);}
-
-/* hidden canvas for PiP */
-#pipCanvas{display:none;}
 </style>
 </head>
 <body>
@@ -755,129 +752,103 @@ function undoLastTomato(){
 }
 
 // ══════════════════════════════════════════
-// PICTURE-IN-PICTURE
+// PICTURE-IN-PICTURE (Document PiP API)
 // ══════════════════════════════════════════
-const pipCanvas = document.createElement('canvas');
-pipCanvas.width = 300; pipCanvas.height = 160;
-const pipCtx = pipCanvas.getContext('2d');
-const pipVideo = document.createElement('video');
-pipVideo.srcObject = pipCanvas.captureStream(10); // 10fps
-pipVideo.muted = true;
-let pipActive = false;
-let pipRafId = null;
-
-function drawPiP() {
-  const ctx = pipCtx;
-  const w = pipCanvas.width, h = pipCanvas.height;
-  const isWork = mode === 'work';
-  const accent = isWork ? '#ff5533' : '#00d4aa';
-
-  // background
-  ctx.fillStyle = '#080b0f';
-  ctx.fillRect(0, 0, w, h);
-
-  // subtle border glow
-  ctx.strokeStyle = accent;
-  ctx.lineWidth = 2;
-  ctx.globalAlpha = 0.3;
-  ctx.strokeRect(1, 1, w-2, h-2);
-  ctx.globalAlpha = 1;
-
-  // mode label
-  ctx.fillStyle = '#445566';
-  ctx.font = 'bold 11px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(modeLabels[mode].toUpperCase(), w/2, 28);
-
-  // big timer
-  ctx.fillStyle = isWork ? '#e8eef5' : '#00d4aa';
-  ctx.font = 'bold 58px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(fmtTime(timeLeft), w/2, 92);
-
-  // progress bar
-  const barW = w - 48, barH = 4, barX = 24, barY = 108;
-  ctx.fillStyle = '#1e2832';
-  ctx.beginPath();
-  ctx.roundRect(barX, barY, barW, barH, 2);
-  ctx.fill();
-  const prog = timeLeft / totalTime;
-  ctx.fillStyle = accent;
-  ctx.beginPath();
-  ctx.roundRect(barX, barY, barW * (1 - prog), barH, 2);
-  ctx.fill();
-
-  // buttons: pause/resume | stop
-  const btnY = 130, btnH = 22;
-  // pause/resume
-  const pauseLabel = running ? '⏸ 暂停' : '▶ 继续';
-  ctx.fillStyle = accent;
-  ctx.beginPath();
-  ctx.roundRect(24, btnY, 118, btnH, 5);
-  ctx.fill();
-  ctx.fillStyle = isWork ? '#080b0f' : '#080b0f';
-  ctx.font = 'bold 11px monospace';
-  ctx.textAlign = 'center';
-  ctx.fillText(pauseLabel, 83, btnY + 15);
-
-  // stop
-  ctx.fillStyle = '#1e2832';
-  ctx.beginPath();
-  ctx.roundRect(158, btnY, 118, btnH, 5);
-  ctx.fill();
-  ctx.fillStyle = '#8899aa';
-  ctx.fillText('■ 终止', 217, btnY + 15);
-
-  if (pipActive) pipRafId = requestAnimationFrame(drawPiP);
-}
+let pipWindow = null;
+let pipInterval = null;
 
 async function togglePiP() {
-  if (!('pictureInPictureEnabled' in document)) {
-    alert('你的浏览器不支持画中画功能，请使用最新版 Chrome。');
+  // Close if already open
+  if (pipWindow && !pipWindow.closed) {
+    pipWindow.close();
     return;
   }
-  if (pipActive) {
-    await document.exitPictureInPicture().catch(()=>{});
+
+  if (!('documentPictureInPicture' in window)) {
+    alert('你的 Chrome 版本不支持小窗功能，请更新到 Chrome 116 或更高版本。');
     return;
   }
+
   try {
-    await pipVideo.play();
-    pipActive = true;
-    drawPiP();
-    await pipVideo.requestPictureInPicture();
+    pipWindow = await window.documentPictureInPicture.requestWindow({
+      width: 280, height: 200,
+      disallowReturnToOpener: false,
+    });
+
+    // Inject styles into pip window
+    const style = pipWindow.document.createElement('style');
+    style.textContent = `
+      *{margin:0;padding:0;box-sizing:border-box;}
+      body{background:#080b0f;font-family:'Syne Mono',monospace;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;gap:10px;user-select:none;}
+      #pip-mode{font-size:10px;font-weight:700;letter-spacing:.25em;text-transform:uppercase;color:#445566;}
+      #pip-time{font-size:56px;font-weight:700;line-height:1;letter-spacing:-.02em;}
+      #pip-bar-bg{width:220px;height:3px;background:#1e2832;border-radius:2px;}
+      #pip-bar-fill{height:3px;border-radius:2px;transition:width .9s linear;}
+      .pip-btns{display:flex;gap:8px;}
+      .pip-btn{border:none;border-radius:8px;font-size:12px;font-weight:700;padding:8px 22px;cursor:pointer;font-family:monospace;}
+      #pip-pause{color:white;}
+      #pip-stop{background:#1e2832;color:#8899aa;}
+    `;
+    pipWindow.document.head.appendChild(style);
+
+    // Inject Google Fonts
+    const font = pipWindow.document.createElement('link');
+    font.rel = 'stylesheet';
+    font.href = 'https://fonts.googleapis.com/css2?family=Syne+Mono&display=swap';
+    pipWindow.document.head.appendChild(font);
+
+    // Build UI
+    pipWindow.document.body.innerHTML = `
+      <div id="pip-mode"></div>
+      <div id="pip-time"></div>
+      <div id="pip-bar-bg"><div id="pip-bar-fill"></div></div>
+      <div class="pip-btns">
+        <button class="pip-btn" id="pip-pause"></button>
+        <button class="pip-btn" id="pip-stop">■ 终止</button>
+      </div>
+    `;
+    pipWindow.document.head.appendChild(style);
+
+    // Wire up buttons
+    pipWindow.document.getElementById('pip-pause').onclick = () => toggleTimer();
+    pipWindow.document.getElementById('pip-stop').onclick  = () => { resetTimer(); pipWindow.close(); };
+
+    // Update pip content every second
+    function updatePip() {
+      if (!pipWindow || pipWindow.closed) { clearInterval(pipInterval); return; }
+      const isWork = mode === 'work';
+      const accent = isWork ? '#ff5533' : '#00d4aa';
+      const pw = pipWindow.document;
+      pw.getElementById('pip-mode').textContent = modeLabels[mode];
+      pw.getElementById('pip-time').textContent = fmtTime(timeLeft);
+      pw.getElementById('pip-time').style.color = isWork ? '#e8eef5' : '#00d4aa';
+      const pct = (1 - timeLeft / totalTime) * 100;
+      pw.getElementById('pip-bar-fill').style.width = pct + '%';
+      pw.getElementById('pip-bar-fill').style.background = accent;
+      const pauseBtn = pw.getElementById('pip-pause');
+      pauseBtn.textContent = running ? '⏸ 暂停' : '▶ 继续';
+      pauseBtn.style.background = accent;
+      pauseBtn.style.color = isWork ? '#fff' : '#080b0f';
+    }
+    updatePip();
+    pipInterval = setInterval(updatePip, 500);
+
+    // Update pip button in main window
     document.getElementById('pipBtn').classList.add('active');
     document.getElementById('pipBtn').innerHTML = '<span>⊠</span> 关闭小窗';
 
-    // click handling on pip window (pause/stop zones)
-    pipVideo.addEventListener('click', handlePiPClick);
+    pipWindow.addEventListener('pagehide', () => {
+      clearInterval(pipInterval);
+      pipWindow = null;
+      document.getElementById('pipBtn').classList.remove('active');
+      document.getElementById('pipBtn').innerHTML = '<span>⧉</span> 小窗模式';
+    });
+
   } catch(e) {
-    pipActive = false;
-    console.warn('PiP failed:', e);
-    alert('无法启动小窗，请确认已开始计时，并允许画中画权限。');
+    console.warn('PiP error:', e);
+    alert('无法启动小窗：' + e.message);
   }
 }
-
-function handlePiPClick(e) {
-  // video element click gives normalized coords via offsetX/offsetY
-  // canvas is 300x160, but pip window scales it — use ratio
-  const rect = pipVideo.getBoundingClientRect ? pipVideo.getBoundingClientRect() : {width:300,height:160};
-  const scaleX = 300 / (rect.width || 300);
-  const scaleY = 160 / (rect.height || 160);
-  const x = (e.offsetX || 150) * scaleX;
-  const y = (e.offsetY || 80) * scaleY;
-  // pause zone: x 24-142, y 130-152
-  if (x >= 24 && x <= 142 && y >= 130 && y <= 152) { toggleTimer(); }
-  // stop zone: x 158-276, y 130-152
-  if (x >= 158 && x <= 276 && y >= 130 && y <= 152) { resetTimer(); }
-}
-
-document.addEventListener('leavepictureinpicture', () => {
-  pipActive = false;
-  cancelAnimationFrame(pipRafId);
-  document.getElementById('pipBtn').classList.remove('active');
-  document.getElementById('pipBtn').innerHTML = '<span>⧉</span> 小窗模式';
-  pipVideo.removeEventListener('click', handlePiPClick);
-});
 
 // ══════════════════════════════════════════
 // NOTIFICATIONS (improved)
